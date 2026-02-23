@@ -150,6 +150,20 @@ def normalize_details_payload(raw: dict[str, Any], fallback_title: str = "Unknow
     return clean_payload
 
 
+def extract_details_payload(data: Any) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+
+    if data.get("success") is False:
+        return None
+
+    payload = data.get("data")
+    if isinstance(payload, dict):
+        return payload
+
+    return data
+
+
 async def desiremovies_search(session: aiohttp.ClientSession, query: str) -> list[dict[str, Any]]:
     endpoints = ("/api/desiremovies/search", "/api/desiremoviess/search")
     for endpoint in endpoints:
@@ -183,9 +197,10 @@ async def desiremovies_details(session: aiohttp.ClientSession, movie_url: str, f
                 continue
 
             data = await response.json()
-            if not isinstance(data, dict):
+            payload = extract_details_payload(data)
+            if not payload:
                 continue
-            return normalize_details_payload(data, fallback_title=fallback_title)
+            return normalize_details_payload(payload, fallback_title=fallback_title)
     return None
 
 
