@@ -30,6 +30,27 @@ ENABLE_HTTP_SERVER = os.getenv("ENABLE_HTTP_SERVER", "true").lower() == "true"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "webhook").strip("/") or "webhook"
 
+
+def infer_webhook_url() -> str:
+    explicit = WEBHOOK_URL.strip()
+    if explicit:
+        return explicit
+
+    candidates = (
+        os.getenv("RENDER_EXTERNAL_URL", ""),
+        os.getenv("RAILWAY_STATIC_URL", ""),
+        os.getenv("KOYEB_PUBLIC_DOMAIN", ""),
+    )
+    for candidate in candidates:
+        value = candidate.strip()
+        if not value:
+            continue
+        if value.startswith("http://") or value.startswith("https://"):
+            return value
+        return f"https://{value}"
+
+    return ""
+
 HEADERS = {"x-api-key": API_KEY, "Content-Type": "application/json"}
 
 SELECTING_ITEM = 1
@@ -150,6 +171,20 @@ def normalize_details_payload(raw: dict[str, Any], fallback_title: str = "Unknow
     return clean_payload
 
 
+def extract_details_payload(data: Any) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+
+    if data.get("success") is False:
+        return None
+
+    payload = data.get("data")
+    if isinstance(payload, dict):
+        return payload
+
+    return data
+
+
 async def desiremovies_search(session: aiohttp.ClientSession, query: str) -> list[dict[str, Any]]:
     endpoints = ("/api/desiremovies/search", "/api/desiremoviess/search")
     for endpoint in endpoints:
@@ -183,9 +218,10 @@ async def desiremovies_details(session: aiohttp.ClientSession, movie_url: str, f
                 continue
 
             data = await response.json()
-            if not isinstance(data, dict):
+            payload = extract_details_payload(data)
+            if not payload:
                 continue
-            return normalize_details_payload(data, fallback_title=fallback_title)
+            return normalize_details_payload(payload, fallback_title=fallback_title)
     return None
 
 
@@ -420,8 +456,10 @@ def main() -> None:
     if not API_KEY:
         raise RuntimeError("API_KEY is required")
 
+    resolved_webhook_url = infer_webhook_url()
+
     builder = Application.builder().token(token)
-    if not WEBHOOK_URL:
+    if not resolved_webhook_url:
         builder = builder.post_init(initialize_polling).post_shutdown(stop_http_server)
 
     app = builder.build()
@@ -446,8 +484,8 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
 
-    if WEBHOOK_URL:
-        webhook_target = f"{WEBHOOK_URL.rstrip('/')}/{WEBHOOK_PATH}"
+    if resolved_webhook_url:
+        webhook_target = f"{resolved_webhook_url.rstrip('/')}/{WEBHOOK_PATH}"
         logger.info("Starting bot in webhook mode at %s", webhook_target)
         app.run_webhook(
             listen="0.0.0.0",
