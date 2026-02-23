@@ -47,6 +47,61 @@ SELECTING_MOVIE = 1
 # Global application instance
 _application = None
 
+
+def normalize_download_links(raw_links) -> list:
+    """Normalize different API download-link formats into a flat list."""
+    if isinstance(raw_links, dict):
+        for key in ("downloadLinks", "results", "links", "downloads", "data"):
+            value = raw_links.get(key)
+            if isinstance(value, list):
+                raw_links = value
+                break
+
+    if not isinstance(raw_links, list):
+        return []
+
+    normalized_links = []
+    seen_urls = set()
+
+    for item in raw_links:
+        if not isinstance(item, dict):
+            continue
+
+        quality = item.get("quality") or item.get("label") or "Unknown"
+        size = item.get("size") or ""
+
+        direct_url = (
+            item.get("url")
+            or item.get("link")
+            or item.get("directLink")
+            or item.get("download")
+        )
+
+        if direct_url and direct_url not in seen_urls:
+            normalized_links.append({"quality": quality, "size": size, "url": direct_url})
+            seen_urls.add(direct_url)
+
+        nested_links = item.get("links") or item.get("files") or item.get("options")
+        if isinstance(nested_links, list):
+            for nested in nested_links:
+                if not isinstance(nested, dict):
+                    continue
+
+                nested_url = nested.get("url") or nested.get("link") or nested.get("download")
+                if not nested_url or nested_url in seen_urls:
+                    continue
+
+                normalized_links.append(
+                    {
+                        "quality": nested.get("quality") or nested.get("label") or quality,
+                        "size": nested.get("size") or size,
+                        "url": nested_url,
+                    }
+                )
+                seen_urls.add(nested_url)
+
+    return normalized_links
+
 def get_application():
     """Get or create the Telegram application instance."""
     global _application
@@ -320,18 +375,20 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 
                 details = await response.json()
             
-            magic_url = f"{API_BASE_URL}/api/{provider}/magiclinks"
-            params = {"url": movie_url}
-            
-            async with session.get(magic_url, params=params, headers=HEADERS) as response:
-                if response.status != 200:
-                    await query.edit_message_text(
-                        f"❌ <b>Error:</b> Could not fetch download links",
-                        parse_mode="HTML"
-                    )
-                    return ConversationHandler.END
-                
-                magic_links = await response.json()
+            magic_links = normalize_download_links(
+                details.get("downloadLinks")
+                or details.get("magicLinks")
+                or details.get("links")
+                or details.get("downloads")
+            )
+
+            if not magic_links:
+                magic_url = f"{API_BASE_URL}/api/{provider}/magiclinks"
+                params = {"url": movie_url}
+
+                async with session.get(magic_url, params=params, headers=HEADERS) as response:
+                    if response.status == 200:
+                        magic_links = normalize_download_links(await response.json())
             
             title = details.get("title", movie_title)
             year = details.get("year", "N/A")
@@ -363,7 +420,7 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             if magic_links and isinstance(magic_links, list) and len(magic_links) > 0:
                 for link_data in magic_links:
                     quality = link_data.get("quality", "Unknown")
-                    download_url = link_data.get("link", "")
+                    download_url = link_data.get("url") or link_data.get("link") or ""
                     size = link_data.get("size", "")
                     
                     if download_url:

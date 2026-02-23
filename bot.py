@@ -45,6 +45,61 @@ HEADERS = {
 SEARCHING, SELECTING_MOVIE = range(2)
 
 
+def normalize_download_links(raw_links) -> list:
+    """Normalize different API download-link formats into a flat list."""
+    if isinstance(raw_links, dict):
+        for key in ("downloadLinks", "results", "links", "downloads", "data"):
+            value = raw_links.get(key)
+            if isinstance(value, list):
+                raw_links = value
+                break
+
+    if not isinstance(raw_links, list):
+        return []
+
+    normalized_links = []
+    seen_urls = set()
+
+    for item in raw_links:
+        if not isinstance(item, dict):
+            continue
+
+        quality = item.get("quality") or item.get("label") or "Unknown"
+        size = item.get("size") or ""
+
+        direct_url = (
+            item.get("url")
+            or item.get("link")
+            or item.get("directLink")
+            or item.get("download")
+        )
+
+        if direct_url and direct_url not in seen_urls:
+            normalized_links.append({"quality": quality, "size": size, "url": direct_url})
+            seen_urls.add(direct_url)
+
+        nested_links = item.get("links") or item.get("files") or item.get("options")
+        if isinstance(nested_links, list):
+            for nested in nested_links:
+                if not isinstance(nested, dict):
+                    continue
+
+                nested_url = nested.get("url") or nested.get("link") or nested.get("download")
+                if not nested_url or nested_url in seen_urls:
+                    continue
+
+                normalized_links.append(
+                    {
+                        "quality": nested.get("quality") or nested.get("label") or quality,
+                        "size": nested.get("size") or size,
+                        "url": nested_url,
+                    }
+                )
+                seen_urls.add(nested_url)
+
+    return normalized_links
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a welcome message when the command /start is issued."""
     welcome_text = """
@@ -313,17 +368,22 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             plot = details.get("plot") or details.get("description") or "No description available."
             poster = details.get("poster") or details.get("imageUrl") or selected_movie.get("imageUrl") or ""
 
-            # Preferred format from docs: details.downloadLinks
-            download_links = details.get("downloadLinks")
+            # Preferred format from docs: details.downloadLinks (but normalize all variants).
+            download_links = normalize_download_links(
+                details.get("downloadLinks")
+                or details.get("magicLinks")
+                or details.get("links")
+                or details.get("downloads")
+            )
 
-            # Backward compatibility with older ScarperAPI responses.
-            if not isinstance(download_links, list):
+            # Backward compatibility: fetch magic-links endpoint if details payload has no links.
+            if not download_links:
                 magic_url = f"{API_BASE_URL}/api/{provider}/magiclinks"
                 params = {"url": movie_url}
 
                 async with session.get(magic_url, params=params, headers=HEADERS) as response:
                     if response.status == 200:
-                        download_links = await response.json()
+                        download_links = normalize_download_links(await response.json())
                     else:
                         download_links = []
             
