@@ -229,7 +229,6 @@ async def fetch_hdhub4u_movies(session: aiohttp.ClientSession, query: str) -> li
             {
                 "title": item.get("title", "Unknown"),
                 "url": item.get("url") or item.get("link") or "",
-                "imageUrl": item.get("imageUrl") or item.get("poster") or "",
                 "year": item.get("year"),
                 "quality": item.get("quality"),
                 "provider": "hdhub4u",
@@ -406,8 +405,6 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             duration = details.get("duration", "N/A")
             genre = details.get("genre", "N/A")
             plot = details.get("plot") or details.get("description") or "No description available."
-            poster = details.get("poster") or details.get("imageUrl") or selected_movie.get("imageUrl") or ""
-
             # Preferred format from docs: details.downloadLinks (but normalize all variants).
             download_links = normalize_download_links(
                 details.get("downloadLinks")
@@ -461,7 +458,7 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                         # Create watch online URL
                         encoded_url = quote(download_url, safe='')
                         watch_url = f"{STREAMING_HUB_URL}/?url={encoded_url}"
-                        
+
                         button_text = f"{quality}"
                         if size:
                             button_text += f" ({size})"
@@ -485,20 +482,9 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             context.user_data["selected_movie"] = {
                 "title": title,
                 "info": movie_info,
-                "poster": poster,
                 "links": download_links,
                 "provider": provider
             }
-
-            if poster:
-                try:
-                    await query.message.reply_photo(
-                        photo=poster,
-                        caption=f"🖼 <b>{title}</b>\n{provider_emoji} Source: {provider_name}",
-                        parse_mode="HTML",
-                    )
-                except Exception as image_error:
-                    logger.warning("Could not send poster image: %s", image_error)
             
             await query.edit_message_text(
                 movie_info,
