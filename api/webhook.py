@@ -1,642 +1,344 @@
 #!/usr/bin/env python3
-"""
-Telegram Movie Scraper Bot - Webhook Version
-For Vercel Serverless Deployment
+"""Webhook handler for DesireMovies-only Telegram bot."""
 
-This version uses webhooks instead of polling for serverless environments.
-"""
-
-import os
+import asyncio
 import json
 import logging
-import asyncio
-import aiohttp
-from urllib.parse import quote
+import os
+import re
 from http.server import BaseHTTPRequestHandler
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from typing import Any
+
+import aiohttp
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
-    CommandHandler,
     CallbackQueryHandler,
+    CommandHandler,
     ContextTypes,
     ConversationHandler,
 )
 
-# Enable logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration
-API_BASE_URL = "https://scarperapi-8lk0.onrender.com"
-STREAMING_HUB_URL = "https://streaminghub.42web.io"
+API_BASE_URL = os.getenv("API_BASE_URL", "https://scarperapi-8lk0.onrender.com")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-API_KEY = os.getenv("API_KEY", "sk_Wv4v8TwKE4muWoxW-2UD8zG0CW_CLT6z")
+API_KEY = os.getenv("API_KEY", "")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 
-# Headers for API requests
-HEADERS = {
-    "x-api-key": API_KEY,
-    "Content-Type": "application/json",
-}
-
-# Conversation states
-SELECTING_MOVIE = 1
-
-# Global application instance
+HEADERS = {"x-api-key": API_KEY, "Content-Type": "application/json"}
+SELECTING_ITEM = 1
 _application = None
 
 
-def normalize_download_links(raw_links) -> list:
-    """Normalize different API download-link formats into a flat list."""
-    normalized_links = []
-    seen_urls = set()
+def normalize_quality(quality: str | None) -> str:
+    text = str(quality or "").strip()
+    return text if text and text.lower() not in {"unknown", "n/a", "na", "none", "null"} else "Unknown"
 
-    def add_link(url: str, quality: str = "Unknown", size: str = "") -> None:
+
+def normalize_size(size: str | None) -> str:
+    text = str(size or "").strip()
+    return text if text and text.lower() not in {"unknown", "n/a", "na", "none", "null"} else "Unknown"
+
+
+def _episode_number_from_text(value: str) -> int | None:
+    match = re.search(r"(?:e|ep|episode)\s*0*(\d+)", value or "", re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def normalize_download_links(raw_links: Any) -> list[dict[str, str]]:
+    links: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(url: Any, quality: str = "Unknown", size: str = "Unknown") -> None:
         if not isinstance(url, str):
             return
-
-        cleaned_url = url.strip()
-        if not cleaned_url or not cleaned_url.startswith(("http://", "https://")):
+        cleaned = url.strip()
+        if not cleaned.startswith(("http://", "https://")) or cleaned in seen:
             return
+        links.append({"quality": normalize_quality(quality), "size": normalize_size(size), "url": cleaned})
+        seen.add(cleaned)
 
-        if cleaned_url in seen_urls:
-            return
-
-        normalized_links.append({"quality": quality or "Unknown", "size": size or "", "url": cleaned_url})
-        seen_urls.add(cleaned_url)
-
-    def walk(node, inherited_quality: str = "Unknown", inherited_size: str = "") -> None:
+    def walk(node: Any, quality: str = "Unknown", size: str = "Unknown") -> None:
         if isinstance(node, str):
-            add_link(node, inherited_quality, inherited_size)
+            add(node, quality, size)
             return
-
         if isinstance(node, list):
             for item in node:
-                walk(item, inherited_quality, inherited_size)
+                walk(item, quality, size)
             return
-
         if not isinstance(node, dict):
             return
 
-        quality = node.get("quality") or node.get("label") or node.get("name") or inherited_quality
-        size = node.get("size") or inherited_size
+        current_quality = node.get("quality") or node.get("label") or node.get("name") or quality
+        current_size = node.get("size") or node.get("fileSize") or size
+        add(node.get("url") or node.get("link") or node.get("directLink") or node.get("download"), current_quality, current_size)
 
-        direct_url = node.get("url") or node.get("link") or node.get("directLink") or node.get("download")
-        if isinstance(direct_url, str):
-            add_link(direct_url, quality, size)
-
-        # Common containers used by providers.
-        for key in ("downloadLinks", "results", "links", "downloads", "data", "files", "options"):
+        for key in ("downloadLinks", "links", "downloads", "results", "data", "files", "options"):
             value = node.get(key)
-            if isinstance(value, (list, dict, str)):
-                walk(value, quality, size)
-
-        # Generic fallback: dictionaries sometimes map quality names to URLs/lists.
-        for key, value in node.items():
-            if key in {
-                "url",
-                "link",
-                "directLink",
-                "download",
-                "quality",
-                "label",
-                "name",
-                "size",
-                "downloadLinks",
-                "results",
-                "links",
-                "downloads",
-                "data",
-                "files",
-                "options",
-            }:
-                continue
-
-            if isinstance(value, str):
-                add_link(value, key, size)
-            elif isinstance(value, (list, dict)):
-                walk(value, key if inherited_quality == "Unknown" else inherited_quality, size)
+            if isinstance(value, (str, list, dict)):
+                walk(value, current_quality, current_size)
 
     walk(raw_links)
-    return normalized_links
+    return links
 
-def get_application():
-    """Get or create the Telegram application instance."""
+
+def normalize_details_payload(raw: dict[str, Any], fallback_title: str = "Unknown") -> dict[str, Any]:
+    title = raw.get("title") or fallback_title
+    payload_type = "series" if raw.get("episodes") else "movie"
+    download_links = normalize_download_links(raw.get("downloadLinks") or raw.get("links") or raw.get("downloads"))
+
+    episodes: list[dict[str, Any]] = []
+    for index, episode in enumerate(raw.get("episodes") or [], start=1):
+        episode_number = episode.get("episodeNumber")
+        if not isinstance(episode_number, int):
+            episode_number = _episode_number_from_text(str(episode.get("title") or "")) or index
+        episode_links = normalize_download_links(
+            episode.get("downloadLinks") or episode.get("links") or episode.get("downloads")
+        )
+        if episode_links:
+            episodes.append({"episodeNumber": int(episode_number), "downloadLinks": episode_links})
+
+    episodes.sort(key=lambda ep: ep["episodeNumber"])
+    payload: dict[str, Any] = {"success": True, "type": "series" if episodes else payload_type, "title": title, "downloadLinks": download_links}
+    if episodes:
+        payload["episodes"] = episodes
+    return payload
+
+
+async def desiremovies_search(session: aiohttp.ClientSession, query: str) -> list[dict[str, str]]:
+    async with session.get(f"{API_BASE_URL}/api/desiremovies/search", params={"q": query}, headers=HEADERS) as response:
+        if response.status != 200:
+            return []
+        data = await response.json()
+        items = data.get("results") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            return []
+        return [
+            {"title": str(item.get("title") or "Unknown").strip(), "url": str(item.get("url") or item.get("link") or "").strip()}
+            for item in items
+            if str(item.get("url") or item.get("link") or "").strip()
+        ]
+
+
+async def desiremovies_details(session: aiohttp.ClientSession, movie_url: str, fallback_title: str) -> dict[str, Any] | None:
+    async with session.get(f"{API_BASE_URL}/api/desiremovies/details", params={"url": movie_url}, headers=HEADERS) as response:
+        if response.status != 200:
+            return None
+        data = await response.json()
+        return normalize_details_payload(data, fallback_title=fallback_title) if isinstance(data, dict) else None
+
+
+def build_search_keyboard(results: list[dict[str, str]]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(result["title"], callback_data=f"movie_{idx}")] for idx, result in enumerate(results)]
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_download_keyboard(download_links: list[dict[str, str]]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(f"🎬 {normalize_quality(link.get('quality'))} | {normalize_size(link.get('size'))}", url=link["url"])] for link in download_links]
+    rows.append([InlineKeyboardButton("🔍 New Search", callback_data="new_search")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_episode_keyboard(episodes: list[dict[str, Any]]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(f"Episode {episode['episodeNumber']}", callback_data=f"episode_{idx}")] for idx, episode in enumerate(episodes)]
+    rows.append([InlineKeyboardButton("🔍 New Search", callback_data="new_search")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("🎬 Welcome! Use /search <movie name> to find DesireMovies links.")
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("Use /search <movie name>.\nMovies and series links are provided via inline buttons.")
+
+
+async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query_text = " ".join(context.args).strip()
+    if not query_text:
+        await update.message.reply_text("Please use /search <movie name>.")
+        return ConversationHandler.END
+
+    status = await update.message.reply_text(f"🔍 Searching: <code>{query_text}</code>", parse_mode="HTML")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            results = await desiremovies_search(session, query_text)
+    except aiohttp.ClientError:
+        await status.edit_text("Unable to connect to API.")
+        return ConversationHandler.END
+
+    if not results:
+        await status.edit_text("No results found.")
+        return ConversationHandler.END
+
+    context.user_data["search_results"] = results[:20]
+    await status.edit_text("Select a movie:", reply_markup=build_search_keyboard(context.user_data["search_results"]))
+    return SELECTING_ITEM
+
+
+async def on_movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "cancel":
+        await query.edit_message_text("Search cancelled.")
+        return ConversationHandler.END
+
+    results = context.user_data.get("search_results", [])
+    try:
+        idx = int(query.data.split("_")[1])
+        selected = results[idx]
+    except (ValueError, IndexError, KeyError):
+        await query.edit_message_text("Invalid selection. Please search again.")
+        return ConversationHandler.END
+
+    await query.edit_message_text(f"Fetching: {selected['title']}")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            details = await desiremovies_details(session, selected["url"], selected["title"])
+    except aiohttp.ClientError:
+        await query.edit_message_text("Unable to fetch details.")
+        return ConversationHandler.END
+
+    if not details:
+        await query.edit_message_text("Invalid link or details unavailable.")
+        return ConversationHandler.END
+
+    context.user_data["selected_details"] = details
+    if details.get("type") == "series" and details.get("episodes"):
+        await query.edit_message_text(
+            f"📺 <b>{details['title']}</b>\nSelect an episode:",
+            parse_mode="HTML",
+            reply_markup=build_episode_keyboard(details["episodes"]),
+        )
+        return SELECTING_ITEM
+
+    links = details.get("downloadLinks") or []
+    if not links:
+        await query.edit_message_text("No download links found.")
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        f"🎬 <b>{details['title']}</b>\nChoose quality:",
+        parse_mode="HTML",
+        reply_markup=build_download_keyboard(links),
+    )
+    return ConversationHandler.END
+
+
+async def on_episode_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    details = context.user_data.get("selected_details") or {}
+    episodes = details.get("episodes") or []
+
+    try:
+        idx = int(query.data.split("_")[1])
+        episode = episodes[idx]
+    except (ValueError, IndexError, KeyError):
+        await query.edit_message_text("Invalid episode. Please search again.")
+        return ConversationHandler.END
+
+    links = episode.get("downloadLinks") or []
+    if not links:
+        await query.edit_message_text("No download links found for this episode.")
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        f"📺 <b>{details.get('title', 'Series')}</b>\nEpisode {episode['episodeNumber']}\nChoose quality:",
+        parse_mode="HTML",
+        reply_markup=build_download_keyboard(links),
+    )
+    return ConversationHandler.END
+
+
+async def new_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    callback = update.callback_query
+    await callback.answer()
+    await callback.edit_message_text("Start a new search with /search <movie name>")
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message:
+        await update.message.reply_text("Operation cancelled.")
+    return ConversationHandler.END
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("Update error: %s", context.error)
+
+
+def _setup_handlers(application: Application) -> None:
+    conversation = ConversationHandler(
+        entry_points=[CommandHandler("search", search_movies)],
+        states={
+            SELECTING_ITEM: [
+                CallbackQueryHandler(on_movie_selected, pattern=r"^movie_\d+$"),
+                CallbackQueryHandler(on_episode_selected, pattern=r"^episode_\d+$"),
+                CallbackQueryHandler(new_search, pattern=r"^new_search$"),
+                CallbackQueryHandler(cancel, pattern=r"^cancel$"),
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    application.add_handler(conversation)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_error_handler(error_handler)
+
+
+def get_application() -> Application:
     global _application
     if _application is None:
         _application = Application.builder().token(BOT_TOKEN).build()
         _setup_handlers(_application)
     return _application
 
-def _setup_handlers(application):
-    """Setup all handlers for the bot."""
-    # Add conversation handler for search flow
-    conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("search", search_movies),
-        ],
-        states={
-            SELECTING_MOVIE: [
-                CallbackQueryHandler(select_movie, pattern=r"^movie_\d+$"),
-                CallbackQueryHandler(back_to_results, pattern="^back_to_results$"),
-                CallbackQueryHandler(new_search, pattern="^new_search$"),
-                CallbackQueryHandler(cancel, pattern="^cancel$"),
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CommandHandler("start", start),
-        ],
-    )
-    
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    
-    # Add callback query handlers outside conversation
-    application.add_handler(CallbackQueryHandler(select_movie, pattern=r"^movie_\d+$"))
-    application.add_handler(CallbackQueryHandler(back_to_results, pattern="^back_to_results$"))
-    application.add_handler(CallbackQueryHandler(new_search, pattern="^new_search$"))
-    application.add_handler(CallbackQueryHandler(cancel, pattern="^cancel$"))
-    
-    # Add error handler
-    application.add_error_handler(error_handler)
-
-
-async def search_provider(session: aiohttp.ClientSession, provider: str, query: str) -> list:
-    """Search movies from a specific provider."""
-    search_url = f"{API_BASE_URL}/api/{provider}/search"
-    params = {"q": query}
-    
-    try:
-        async with session.get(search_url, params=params, headers=HEADERS) as response:
-            if response.status == 200:
-                data = await response.json()
-                if isinstance(data, dict) and isinstance(data.get("results"), list):
-                    data = data["results"]
-                if data and isinstance(data, list):
-                    for item in data:
-                        item["provider"] = provider
-                    return data
-            else:
-                logger.warning(f"{provider} API returned status {response.status}")
-    except Exception as e:
-        logger.error(f"Error searching {provider}: {e}")
-    
-    return []
-
-
-async def fetch_hdhub4u_movies(session: aiohttp.ClientSession, query: str) -> list:
-    """Fetch HDHub4U search results and normalize expected fields."""
-    results = await search_provider(session, "hdhub4u", query)
-    normalized_results = []
-
-    for item in results:
-        normalized_results.append(
-            {
-                "title": item.get("title", "Unknown"),
-                "url": item.get("url") or item.get("link") or "",
-                "imageUrl": item.get("imageUrl") or item.get("poster") or "",
-                "year": item.get("year"),
-                "quality": item.get("quality"),
-                "provider": "hdhub4u",
-            }
-        )
-
-    return normalized_results
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a welcome message when the command /start is issued."""
-    welcome_text = """
-🎬 <b>Welcome to Movie Scraper Bot!</b>
-
-I can help you find and download movies with direct links from:
-🟢 <b>HdHub4U</b>
-🔵 <b>DesireMovies</b>
-
-<b>Commands:</b>
-🔍 /search &lt;movie_name&gt; - Search for movies
-📋 /help - Show help message
-
-<b>Features:</b>
-✅ Direct download links (480p, 720p, 1080p, 4K)
-✅ Watch online without downloading
-✅ Fast and reliable links
-
-<i>Send me a movie name to get started!</i>
-    """
-    
-    await update.message.reply_text(
-        welcome_text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 Channel", url="https://t.me/your_channel")]
-        ])
-    )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a help message when the command /help is issued."""
-    help_text = """
-🎬 <b>Movie Scraper Bot - Help</b>
-
-<b>Movie Sources:</b>
-🟢 <b>HdHub4U</b> - Bollywood, Hollywood, South Indian movies
-🔵 <b>DesireMovies</b> - Dual audio, Hindi dubbed movies
-
-<b>How to use:</b>
-
-1️⃣ <b>Search for a movie:</b>
-   Type: <code>/search movie_name</code>
-   Example: <code>/search inception</code>
-
-2️⃣ <b>Select a movie:</b>
-   Click on the movie from search results
-   🟢 = HdHub4U | 🔵 = DesireMovies
-
-3️⃣ <b>Choose quality:</b>
-   • 480p - Standard quality
-   • 720p - HD quality
-   • 1080p - Full HD quality
-   • 4K - Ultra HD quality (if available)
-
-4️⃣ <b>Watch or Download:</b>
-   • Click "📥 Direct Link" to download
-   • Click "▶️ Watch Online" to stream
-
-<b>Commands:</b>
-/start - Start the bot
-/search - Search for movies
-/help - Show this help message
-
-<b>Note:</b> Some links may require a download manager.
-    """
-    
-    await update.message.reply_text(help_text, parse_mode="HTML")
-
-
-async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Search for movies using HdHub4U and DesireMovies APIs."""
-    query = " ".join(context.args)
-    
-    if not query:
-        await update.message.reply_text(
-            "❌ <b>Please provide a movie name!</b>\n\n"
-            "Usage: <code>/search movie_name</code>\n"
-            "Example: <code>/search inception</code>",
-            parse_mode="HTML"
-        )
-        return ConversationHandler.END
-    
-    # Show searching message
-    searching_msg = await update.message.reply_text(
-        f"🔍 <b>Searching for:</b> <code>{query}</code>\n"
-        f"🌐 <b>Sources:</b> HdHub4U & DesireMovies\n\n"
-        f"Please wait...",
-        parse_mode="HTML"
-    )
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            # Search both providers concurrently
-            hdhub4u_results = await fetch_hdhub4u_movies(session, query)
-            desiremovies_results = await search_provider(session, "desiremovies", query)
-            
-            # Combine results
-            all_results = []
-            
-            if hdhub4u_results:
-                all_results.extend(hdhub4u_results)
-            
-            if desiremovies_results:
-                all_results.extend(desiremovies_results)
-            
-            if not all_results:
-                await searching_msg.edit_text(
-                    f"❌ <b>No results found for:</b> <code>{query}</code>\n\n"
-                    f"🌐 <b>Searched:</b> HdHub4U & DesireMovies\n\n"
-                    f"Try searching with a different name.",
-                    parse_mode="HTML"
-                )
-                return ConversationHandler.END
-            
-            # Store search results in user context
-            context.user_data["search_results"] = all_results
-            
-            # Create buttons for each movie
-            keyboard = []
-            for idx, movie in enumerate(all_results[:15]):
-                title = movie.get("title", "Unknown")
-                year = movie.get("year", "N/A")
-                quality = movie.get("quality", "")
-                provider = movie.get("provider", "unknown")
-                
-                provider_emoji = "🟢" if provider == "hdhub4u" else "🔵"
-                
-                button_text = f"{provider_emoji} {title} ({year})"
-                if quality:
-                    button_text += f" [{quality}]"
-                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"movie_{idx}")])
-            
-            keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-            
-            hdhub4u_count = len(hdhub4u_results) if hdhub4u_results else 0
-            desiremovies_count = len(desiremovies_results) if desiremovies_results else 0
-            
-            await searching_msg.edit_text(
-                f"🎬 <b>Found {len(all_results)} results for:</b> <code>{query}</code>\n\n"
-                f"🟢 <b>HdHub4U:</b> {hdhub4u_count} results\n"
-                f"🔵 <b>DesireMovies:</b> {desiremovies_count} results\n\n"
-                f"Select a movie:",
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return SELECTING_MOVIE
-                    
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        await searching_msg.edit_text(
-            "❌ <b>An error occurred.</b> Please try again later.",
-            parse_mode="HTML"
-        )
-        return ConversationHandler.END
-
-
-async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle movie selection and fetch details."""
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "cancel":
-        await query.edit_message_text(
-            "❌ Search cancelled. Send /search to try again.",
-            parse_mode="HTML"
-        )
-        return ConversationHandler.END
-    
-    movie_idx = int(query.data.split("_")[1])
-    search_results = context.user_data.get("search_results", [])
-    
-    if movie_idx >= len(search_results):
-        await query.edit_message_text(
-            "❌ <b>Error:</b> Invalid selection. Please search again.",
-            parse_mode="HTML"
-        )
-        return ConversationHandler.END
-    
-    selected_movie = search_results[movie_idx]
-    movie_url = selected_movie.get("url") or selected_movie.get("link") or ""
-    movie_title = selected_movie.get("title", "Unknown")
-    provider = selected_movie.get("provider", "hdhub4u")
-    
-    provider_emoji = "🟢" if provider == "hdhub4u" else "🔵"
-    provider_name = "HdHub4U" if provider == "hdhub4u" else "DesireMovies"
-    
-    await query.edit_message_text(
-        f"🎬 <b>Fetching details for:</b> <code>{movie_title}</code>\n"
-        f"{provider_emoji} <b>Source:</b> {provider_name}\n\n"
-        f"Please wait...",
-        parse_mode="HTML"
-    )
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            details_url = f"{API_BASE_URL}/api/{provider}/details"
-            params = {"url": movie_url}
-            
-            async with session.get(details_url, params=params, headers=HEADERS) as response:
-                if response.status != 200:
-                    await query.edit_message_text(
-                        f"❌ <b>Error:</b> Could not fetch movie details",
-                        parse_mode="HTML"
-                    )
-                    return ConversationHandler.END
-                
-                details = await response.json()
-            
-            magic_links = normalize_download_links(
-                details.get("downloadLinks")
-                or details.get("magicLinks")
-                or details.get("links")
-                or details.get("downloads")
-                or details
-            )
-
-            if not magic_links:
-                magic_url = f"{API_BASE_URL}/api/{provider}/magiclinks"
-                params = {"url": movie_url}
-
-                async with session.get(magic_url, params=params, headers=HEADERS) as response:
-                    if response.status == 200:
-                        magic_links = normalize_download_links(await response.json())
-            
-            title = details.get("title", movie_title)
-            year = details.get("year", "N/A")
-            rating = details.get("rating", "N/A")
-            duration = details.get("duration", "N/A")
-            genre = details.get("genre", "N/A")
-            plot = details.get("plot") or details.get("description") or "No description available."
-            poster = details.get("poster") or details.get("imageUrl") or selected_movie.get("imageUrl") or ""
-            
-            if len(plot) > 300:
-                plot = plot[:297] + "..."
-            
-            movie_info = f"""
-🎬 <b>{title}</b>
-{provider_emoji} <b>Source:</b> {provider_name}
-
-📅 <b>Year:</b> {year}
-⭐ <b>Rating:</b> {rating}/10
-⏱ <b>Duration:</b> {duration}
-🎭 <b>Genre:</b> {genre}
-
-📝 <b>Plot:</b>
-{plot}
-
-<b>Select quality below:</b>
-            """.strip()
-            
-            keyboard = []
-            
-            if magic_links and isinstance(magic_links, list) and len(magic_links) > 0:
-                for link_data in magic_links:
-                    quality = link_data.get("quality", "Unknown")
-                    download_url = link_data.get("url") or link_data.get("link") or ""
-                    size = link_data.get("size", "")
-                    
-                    if download_url:
-                        encoded_url = quote(download_url, safe='')
-                        watch_url = f"{STREAMING_HUB_URL}/?url={encoded_url}"
-                        
-                        button_text = f"{quality}"
-                        if size:
-                            button_text += f" ({size})"
-                        
-                        keyboard.append([
-                            InlineKeyboardButton(f"📥 {button_text}", url=download_url),
-                            InlineKeyboardButton(f"▶️ Watch {quality}", url=watch_url)
-                        ])
-            else:
-                keyboard.append([InlineKeyboardButton("❌ No download links available", callback_data="noop")])
-            
-            keyboard.append([
-                InlineKeyboardButton("🔙 Back to Results", callback_data="back_to_results"),
-                InlineKeyboardButton("🔍 New Search", callback_data="new_search")
-            ])
-
-            if poster:
-                try:
-                    await query.message.reply_photo(
-                        photo=poster,
-                        caption=f"🖼 <b>{title}</b>\n{provider_emoji} Source: {provider_name}",
-                        parse_mode="HTML",
-                    )
-                except Exception as image_error:
-                    logger.warning("Could not send poster image: %s", image_error)
-            
-            await query.edit_message_text(
-                movie_info,
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            
-            return ConversationHandler.END
-            
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        await query.edit_message_text(
-            "❌ <b>An error occurred.</b> Please try again later.",
-            parse_mode="HTML"
-        )
-        return ConversationHandler.END
-
-
-async def back_to_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Go back to search results."""
-    query = update.callback_query
-    await query.answer()
-    
-    search_results = context.user_data.get("search_results", [])
-    
-    if not search_results:
-        await query.edit_message_text(
-            "❌ Search results expired. Please search again with /search",
-            parse_mode="HTML"
-        )
-        return ConversationHandler.END
-    
-    hdhub4u_count = sum(1 for m in search_results if m.get("provider") == "hdhub4u")
-    desiremovies_count = sum(1 for m in search_results if m.get("provider") == "desiremovies")
-    
-    keyboard = []
-    for idx, movie in enumerate(search_results[:15]):
-        title = movie.get("title", "Unknown")
-        year = movie.get("year", "N/A")
-        quality = movie.get("quality", "")
-        provider = movie.get("provider", "unknown")
-        
-        provider_emoji = "🟢" if provider == "hdhub4u" else "🔵"
-        
-        button_text = f"{provider_emoji} {title} ({year})"
-        if quality:
-            button_text += f" [{quality}]"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"movie_{idx}")])
-    
-    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-    
-    await query.edit_message_text(
-        f"🎬 <b>Search Results:</b>\n\n"
-        f"🟢 <b>HdHub4U:</b> {hdhub4u_count} results\n"
-        f"🔵 <b>DesireMovies:</b> {desiremovies_count} results\n\n"
-        f"Select a movie:",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return SELECTING_MOVIE
-
-
-async def new_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Prompt user for a new search."""
-    query = update.callback_query
-    await query.answer()
-    
-    await query.edit_message_text(
-        "🔍 <b>Start a new search</b>\n\n"
-        "Type: <code>/search movie_name</code>\n"
-        "Example: <code>/search inception</code>",
-        parse_mode="HTML"
-    )
-    return ConversationHandler.END
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel the conversation."""
-    await update.message.reply_text(
-        "❌ Operation cancelled. Send /search to find movies.",
-        parse_mode="HTML"
-    )
-    return ConversationHandler.END
-
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log errors caused by updates."""
-    logger.error(f"Update {update} caused error {context.error}")
-
 
 class handler(BaseHTTPRequestHandler):
-    """Vercel serverless function handler."""
-    
-    def do_GET(self):
-        """Handle GET requests - health check."""
+    def do_GET(self) -> None:
         self.send_response(200)
-        self.send_header('Content-type', 'application/json')
+        self.send_header("Content-type", "application/json")
         self.end_headers()
-        response = {"status": "ok", "message": "Bot is running"}
-        self.wfile.write(json.dumps(response).encode())
-    
-    def do_POST(self):
-        """Handle POST requests - webhook updates from Telegram."""
-        content_length = int(self.headers.get('Content-Length', 0))
+        self.wfile.write(json.dumps({"status": "ok"}).encode())
+
+    def do_POST(self) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_length)
-        
+
         try:
-            update_data = json.loads(post_data.decode('utf-8'))
+            update_data = json.loads(post_data.decode("utf-8"))
             update = Update.de_json(update_data, None)
-            
-            # Process the update
-            application = get_application()
-            
-            # Run async processing
+            app = get_application()
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(application.process_update(update))
+            loop.run_until_complete(app.process_update(update))
             loop.close()
-            
+
             self.send_response(200)
-            self.send_header('Content-type', 'application/json')
+            self.send_header("Content-type", "application/json")
             self.end_headers()
-            response = {"status": "ok"}
-            self.wfile.write(json.dumps(response).encode())
-            
-        except Exception as e:
-            logger.error(f"Error processing update: {e}")
+            self.wfile.write(json.dumps({"status": "ok"}).encode())
+        except Exception as exc:
+            logger.error("Error processing webhook update: %s", exc)
             self.send_response(500)
-            self.send_header('Content-type', 'application/json')
+            self.send_header("Content-type", "application/json")
             self.end_headers()
-            response = {"status": "error", "message": str(e)}
-            self.wfile.write(json.dumps(response).encode())
+            self.wfile.write(json.dumps({"status": "error"}).encode())
 
 
-# Initialize and set webhook on module load
 if BOT_TOKEN and WEBHOOK_URL:
     try:
         app = get_application()
-        # Set webhook
         webhook_url = f"{WEBHOOK_URL}/webhook"
         asyncio.get_event_loop().run_until_complete(app.bot.set_webhook(webhook_url))
-        logger.info(f"Webhook set to: {webhook_url}")
-    except Exception as e:
-        logger.error(f"Failed to set webhook: {e}")
+    except Exception as exc:
+        logger.error("Webhook setup failed: %s", exc)
