@@ -50,56 +50,76 @@ _application = None
 
 def normalize_download_links(raw_links) -> list:
     """Normalize different API download-link formats into a flat list."""
-    if isinstance(raw_links, dict):
-        for key in ("downloadLinks", "results", "links", "downloads", "data"):
-            value = raw_links.get(key)
-            if isinstance(value, list):
-                raw_links = value
-                break
-
-    if not isinstance(raw_links, list):
-        return []
-
     normalized_links = []
     seen_urls = set()
 
-    for item in raw_links:
-        if not isinstance(item, dict):
-            continue
+    def add_link(url: str, quality: str = "Unknown", size: str = "") -> None:
+        if not isinstance(url, str):
+            return
 
-        quality = item.get("quality") or item.get("label") or "Unknown"
-        size = item.get("size") or ""
+        cleaned_url = url.strip()
+        if not cleaned_url or not cleaned_url.startswith(("http://", "https://")):
+            return
 
-        direct_url = (
-            item.get("url")
-            or item.get("link")
-            or item.get("directLink")
-            or item.get("download")
-        )
+        if cleaned_url in seen_urls:
+            return
 
-        if direct_url and direct_url not in seen_urls:
-            normalized_links.append({"quality": quality, "size": size, "url": direct_url})
-            seen_urls.add(direct_url)
+        normalized_links.append({"quality": quality or "Unknown", "size": size or "", "url": cleaned_url})
+        seen_urls.add(cleaned_url)
 
-        nested_links = item.get("links") or item.get("files") or item.get("options")
-        if isinstance(nested_links, list):
-            for nested in nested_links:
-                if not isinstance(nested, dict):
-                    continue
+    def walk(node, inherited_quality: str = "Unknown", inherited_size: str = "") -> None:
+        if isinstance(node, str):
+            add_link(node, inherited_quality, inherited_size)
+            return
 
-                nested_url = nested.get("url") or nested.get("link") or nested.get("download")
-                if not nested_url or nested_url in seen_urls:
-                    continue
+        if isinstance(node, list):
+            for item in node:
+                walk(item, inherited_quality, inherited_size)
+            return
 
-                normalized_links.append(
-                    {
-                        "quality": nested.get("quality") or nested.get("label") or quality,
-                        "size": nested.get("size") or size,
-                        "url": nested_url,
-                    }
-                )
-                seen_urls.add(nested_url)
+        if not isinstance(node, dict):
+            return
 
+        quality = node.get("quality") or node.get("label") or node.get("name") or inherited_quality
+        size = node.get("size") or inherited_size
+
+        direct_url = node.get("url") or node.get("link") or node.get("directLink") or node.get("download")
+        if isinstance(direct_url, str):
+            add_link(direct_url, quality, size)
+
+        # Common containers used by providers.
+        for key in ("downloadLinks", "results", "links", "downloads", "data", "files", "options"):
+            value = node.get(key)
+            if isinstance(value, (list, dict, str)):
+                walk(value, quality, size)
+
+        # Generic fallback: dictionaries sometimes map quality names to URLs/lists.
+        for key, value in node.items():
+            if key in {
+                "url",
+                "link",
+                "directLink",
+                "download",
+                "quality",
+                "label",
+                "name",
+                "size",
+                "downloadLinks",
+                "results",
+                "links",
+                "downloads",
+                "data",
+                "files",
+                "options",
+            }:
+                continue
+
+            if isinstance(value, str):
+                add_link(value, key, size)
+            elif isinstance(value, (list, dict)):
+                walk(value, key if inherited_quality == "Unknown" else inherited_quality, size)
+
+    walk(raw_links)
     return normalized_links
 
 def get_application():
@@ -380,6 +400,7 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 or details.get("magicLinks")
                 or details.get("links")
                 or details.get("downloads")
+                or details
             )
 
             if not magic_links:
