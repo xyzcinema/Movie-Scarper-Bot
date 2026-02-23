@@ -73,12 +73,23 @@ def normalize_download_links(raw_links: Any) -> list[dict[str, str]]:
 
         current_quality = node.get("quality") or node.get("label") or node.get("name") or quality
         current_size = node.get("size") or node.get("fileSize") or size
-        add(node.get("url") or node.get("link") or node.get("directLink") or node.get("download"), current_quality, current_size)
+        add(
+            node.get("url")
+            or node.get("link")
+            or node.get("directLink")
+            or node.get("download")
+            or node.get("downloadUrl")
+            or node.get("href"),
+            current_quality,
+            current_size,
+        )
 
-        for key in ("downloadLinks", "links", "downloads", "results", "data", "files", "options"):
-            value = node.get(key)
+        for key, value in node.items():
+            next_quality = current_quality
+            if isinstance(key, str) and re.search(r"\b(\d{3,4}p|4k|hd|fhd|uhd|cam|hdrip|webrip)\b", key, re.IGNORECASE):
+                next_quality = key.strip()
             if isinstance(value, (str, list, dict)):
-                walk(value, current_quality, current_size)
+                walk(value, next_quality, current_size)
 
     walk(raw_links)
     return links
