@@ -125,6 +125,12 @@ async def search_provider(session: aiohttp.ClientSession, provider: str, query: 
         async with session.get(search_url, params=params, headers=HEADERS) as response:
             if response.status == 200:
                 data = await response.json()
+
+                # HDHub4U returns a list directly.
+                # DesireMovies can return: { query: string, results: Movie[] }
+                if isinstance(data, dict) and isinstance(data.get("results"), list):
+                    data = data["results"]
+
                 if data and isinstance(data, list):
                     # Add provider info to each result
                     for item in data:
@@ -265,7 +271,7 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
     
     selected_movie = search_results[movie_idx]
-    movie_url = selected_movie.get("link", "")
+    movie_url = selected_movie.get("url") or selected_movie.get("link") or ""
     movie_title = selected_movie.get("title", "Unknown")
     provider = selected_movie.get("provider", "hdhub4u")  # Default to hdhub4u
     
@@ -298,29 +304,28 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 
                 details = await response.json()
             
-            # Fetch download links from the correct provider
-            magic_url = f"{API_BASE_URL}/api/{provider}/magiclinks"
-            params = {"url": movie_url}
-            
-            async with session.get(magic_url, params=params, headers=HEADERS) as response:
-                if response.status != 200:
-                    await query.edit_message_text(
-                        f"❌ <b>Error:</b> Could not fetch download links (Status: {response.status})\n"
-                        f"Provider: {provider_name}",
-                        parse_mode="HTML"
-                    )
-                    return ConversationHandler.END
-                
-                magic_links = await response.json()
-            
             # Build movie info message
             title = details.get("title", movie_title)
             year = details.get("year", "N/A")
             rating = details.get("rating", "N/A")
             duration = details.get("duration", "N/A")
             genre = details.get("genre", "N/A")
-            plot = details.get("plot", "No description available.")
-            poster = details.get("poster", "")
+            plot = details.get("plot") or details.get("description") or "No description available."
+            poster = details.get("poster") or details.get("imageUrl") or selected_movie.get("imageUrl") or ""
+
+            # Preferred format from docs: details.downloadLinks
+            download_links = details.get("downloadLinks")
+
+            # Backward compatibility with older ScarperAPI responses.
+            if not isinstance(download_links, list):
+                magic_url = f"{API_BASE_URL}/api/{provider}/magiclinks"
+                params = {"url": movie_url}
+
+                async with session.get(magic_url, params=params, headers=HEADERS) as response:
+                    if response.status == 200:
+                        download_links = await response.json()
+                    else:
+                        download_links = []
             
             # Truncate plot if too long
             if len(plot) > 300:
@@ -345,10 +350,10 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             keyboard = []
             
             # Process download links
-            if magic_links and isinstance(magic_links, list) and len(magic_links) > 0:
-                for link_data in magic_links:
+            if download_links and isinstance(download_links, list) and len(download_links) > 0:
+                for link_data in download_links:
                     quality = link_data.get("quality", "Unknown")
-                    download_url = link_data.get("link", "")
+                    download_url = link_data.get("url") or link_data.get("link") or ""
                     size = link_data.get("size", "")
                     
                     if download_url:
@@ -380,9 +385,19 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 "title": title,
                 "info": movie_info,
                 "poster": poster,
-                "links": magic_links,
+                "links": download_links,
                 "provider": provider
             }
+
+            if poster:
+                try:
+                    await query.message.reply_photo(
+                        photo=poster,
+                        caption=f"🖼 <b>{title}</b>\n{provider_emoji} Source: {provider_name}",
+                        parse_mode="HTML",
+                    )
+                except Exception as image_error:
+                    logger.warning("Could not send poster image: %s", image_error)
             
             await query.edit_message_text(
                 movie_info,
