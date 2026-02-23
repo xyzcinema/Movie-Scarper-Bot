@@ -119,26 +119,37 @@ def normalize_details_payload(raw: dict[str, Any], fallback_title: str = "Unknow
 
 
 async def desiremovies_search(session: aiohttp.ClientSession, query: str) -> list[dict[str, str]]:
-    async with session.get(f"{API_BASE_URL}/api/desiremovies/search", params={"q": query}, headers=HEADERS) as response:
-        if response.status != 200:
-            return []
-        data = await response.json()
-        items = data.get("results") if isinstance(data, dict) else data
-        if not isinstance(items, list):
-            return []
-        return [
-            {"title": str(item.get("title") or "Unknown").strip(), "url": str(item.get("url") or item.get("link") or "").strip()}
-            for item in items
-            if str(item.get("url") or item.get("link") or "").strip()
-        ]
+    endpoints = ("/api/desiremovies/search", "/api/desiremoviess/search")
+    for endpoint in endpoints:
+        async with session.get(f"{API_BASE_URL}{endpoint}", params={"q": query}, headers=HEADERS) as response:
+            if response.status != 200:
+                continue
+
+            data = await response.json()
+            items = data.get("results") if isinstance(data, dict) else data
+            if not isinstance(items, list):
+                continue
+
+            results = [
+                {"title": str(item.get("title") or "Unknown").strip(), "url": str(item.get("url") or item.get("link") or "").strip()}
+                for item in items
+                if str(item.get("url") or item.get("link") or "").strip()
+            ]
+            if results:
+                return results
+    return []
 
 
 async def desiremovies_details(session: aiohttp.ClientSession, movie_url: str, fallback_title: str) -> dict[str, Any] | None:
-    async with session.get(f"{API_BASE_URL}/api/desiremovies/details", params={"url": movie_url}, headers=HEADERS) as response:
-        if response.status != 200:
-            return None
-        data = await response.json()
-        return normalize_details_payload(data, fallback_title=fallback_title) if isinstance(data, dict) else None
+    endpoints = ("/api/desiremovies/details", "/api/desiremoviess/details")
+    for endpoint in endpoints:
+        async with session.get(f"{API_BASE_URL}{endpoint}", params={"url": movie_url}, headers=HEADERS) as response:
+            if response.status != 200:
+                continue
+            data = await response.json()
+            if isinstance(data, dict):
+                return normalize_details_payload(data, fallback_title=fallback_title)
+    return None
 
 
 def build_search_keyboard(results: list[dict[str, str]]) -> InlineKeyboardMarkup:

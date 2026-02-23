@@ -141,32 +141,42 @@ def normalize_details_payload(raw: dict[str, Any], fallback_title: str = "Unknow
 
 
 async def desiremovies_search(session: aiohttp.ClientSession, query: str) -> list[dict[str, Any]]:
-    url = f"{API_BASE_URL}/api/desiremovies/search"
-    async with session.get(url, params={"q": query}, headers=HEADERS) as response:
-        if response.status != 200:
-            return []
-        data = await response.json()
-        items = data.get("results") if isinstance(data, dict) else data
-        if not isinstance(items, list):
-            return []
-        results: list[dict[str, Any]] = []
-        for item in items:
-            title = str(item.get("title") or "Unknown").strip()
-            link = item.get("url") or item.get("link")
-            if title and isinstance(link, str) and link.strip():
-                results.append({"title": title, "url": link.strip()})
-        return results
+    endpoints = ("/api/desiremovies/search", "/api/desiremoviess/search")
+    for endpoint in endpoints:
+        url = f"{API_BASE_URL}{endpoint}"
+        async with session.get(url, params={"q": query}, headers=HEADERS) as response:
+            if response.status != 200:
+                continue
+
+            data = await response.json()
+            items = data.get("results") if isinstance(data, dict) else data
+            if not isinstance(items, list):
+                continue
+
+            results: list[dict[str, Any]] = []
+            for item in items:
+                title = str(item.get("title") or "Unknown").strip()
+                link = item.get("url") or item.get("link")
+                if title and isinstance(link, str) and link.strip():
+                    results.append({"title": title, "url": link.strip()})
+            if results:
+                return results
+    return []
 
 
 async def desiremovies_details(session: aiohttp.ClientSession, movie_url: str, fallback_title: str) -> dict[str, Any] | None:
-    url = f"{API_BASE_URL}/api/desiremovies/details"
-    async with session.get(url, params={"url": movie_url}, headers=HEADERS) as response:
-        if response.status != 200:
-            return None
-        data = await response.json()
-        if not isinstance(data, dict):
-            return None
-        return normalize_details_payload(data, fallback_title=fallback_title)
+    endpoints = ("/api/desiremovies/details", "/api/desiremoviess/details")
+    for endpoint in endpoints:
+        url = f"{API_BASE_URL}{endpoint}"
+        async with session.get(url, params={"url": movie_url}, headers=HEADERS) as response:
+            if response.status != 200:
+                continue
+
+            data = await response.json()
+            if not isinstance(data, dict):
+                continue
+            return normalize_details_payload(data, fallback_title=fallback_title)
+    return None
 
 
 def build_search_keyboard(results: list[dict[str, Any]]) -> InlineKeyboardMarkup:
