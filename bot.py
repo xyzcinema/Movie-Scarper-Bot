@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
 Telegram Movie Scraper Bot
-Fetches movie data from ScarperAPI and provides direct download links
-with watch online feature using streaminghub.
+Fetches movie data from ScarperAPI and provides direct download links.
 """
 
 import os
 import logging
 import aiohttp
 from aiohttp import web
-from urllib.parse import quote
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -29,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 API_BASE_URL = "https://scarperapi-8lk0.onrender.com"
-STREAMING_HUB_URL = "https://streaminghub.42web.io"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 API_KEY = os.getenv("API_KEY", "sk_Wv4v8TwKE4muWoxW-2UD8zG0CW_CLT6z")
 PORT = int(os.getenv("PORT", "10000"))
@@ -135,7 +132,6 @@ I can help you find and download movies with direct links from:
 
 <b>Features:</b>
 ✅ Direct download links (480p, 720p, 1080p, 4K)
-✅ Watch online without downloading
 ✅ Fast and reliable links
 
 <i>Send me a movie name to get started!</i>
@@ -176,9 +172,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
    • 1080p - Full HD quality
    • 4K - Ultra HD quality (if available)
 
-4️⃣ <b>Watch or Download:</b>
+4️⃣ <b>Download:</b>
    • Click "📥 Direct Link" to download
-   • Click "▶️ Watch Online" to stream
 
 <b>Commands:</b>
 /start - Start the bot
@@ -229,7 +224,6 @@ async def fetch_hdhub4u_movies(session: aiohttp.ClientSession, query: str) -> li
             {
                 "title": item.get("title", "Unknown"),
                 "url": item.get("url") or item.get("link") or "",
-                "imageUrl": item.get("imageUrl") or item.get("poster") or "",
                 "year": item.get("year"),
                 "quality": item.get("quality"),
                 "provider": "hdhub4u",
@@ -406,8 +400,6 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             duration = details.get("duration", "N/A")
             genre = details.get("genre", "N/A")
             plot = details.get("plot") or details.get("description") or "No description available."
-            poster = details.get("poster") or details.get("imageUrl") or selected_movie.get("imageUrl") or ""
-
             # Preferred format from docs: details.downloadLinks (but normalize all variants).
             download_links = normalize_download_links(
                 details.get("downloadLinks")
@@ -458,19 +450,11 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                     size = link_data.get("size", "")
                     
                     if download_url:
-                        # Create watch online URL
-                        encoded_url = quote(download_url, safe='')
-                        watch_url = f"{STREAMING_HUB_URL}/?url={encoded_url}"
-                        
                         button_text = f"{quality}"
                         if size:
                             button_text += f" ({size})"
                         
-                        # Add buttons for this quality
-                        keyboard.append([
-                            InlineKeyboardButton(f"📥 {button_text}", url=download_url),
-                            InlineKeyboardButton(f"▶️ Watch {quality}", url=watch_url)
-                        ])
+                        keyboard.append([InlineKeyboardButton(f"📥 {button_text}", url=download_url)])
             else:
                 # No download links found
                 keyboard.append([InlineKeyboardButton("❌ No download links available", callback_data="noop")])
@@ -485,20 +469,9 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             context.user_data["selected_movie"] = {
                 "title": title,
                 "info": movie_info,
-                "poster": poster,
                 "links": download_links,
                 "provider": provider
             }
-
-            if poster:
-                try:
-                    await query.message.reply_photo(
-                        photo=poster,
-                        caption=f"🖼 <b>{title}</b>\n{provider_emoji} Source: {provider_name}",
-                        parse_mode="HTML",
-                    )
-                except Exception as image_error:
-                    logger.warning("Could not send poster image: %s", image_error)
             
             await query.edit_message_text(
                 movie_info,
