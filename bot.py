@@ -33,6 +33,16 @@ WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "webhook").strip("/") or "webhook"
 HEADERS = {"x-api-key": API_KEY, "Content-Type": "application/json"}
 
 SELECTING_ITEM = 1
+TOKEN_PATTERN = re.compile(r"^\d+:[A-Za-z0-9_-]{20,}$")
+
+
+def validate_bot_token(token: str) -> str:
+    cleaned = token.strip()
+    if not cleaned:
+        raise RuntimeError("BOT_TOKEN is required")
+    if not TOKEN_PATTERN.match(cleaned):
+        raise RuntimeError("BOT_TOKEN format looks invalid. Verify the value from @BotFather.")
+    return cleaned
 
 
 def normalize_quality(quality: str | None) -> str:
@@ -366,15 +376,19 @@ async def stop_http_server(application: Application) -> None:
         await runner.cleanup()
 
 
+async def initialize_polling(application: Application) -> None:
+    await application.bot.delete_webhook(drop_pending_updates=True)
+    await start_http_server(application)
+
+
 def main() -> None:
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN is required")
+    token = validate_bot_token(BOT_TOKEN)
     if not API_KEY:
         raise RuntimeError("API_KEY is required")
 
-    builder = Application.builder().token(BOT_TOKEN)
+    builder = Application.builder().token(token)
     if not WEBHOOK_URL:
-        builder = builder.post_init(start_http_server).post_shutdown(stop_http_server)
+        builder = builder.post_init(initialize_polling).post_shutdown(stop_http_server)
 
     app = builder.build()
 
