@@ -8,6 +8,7 @@ with watch online feature using streaminghub.
 import os
 import logging
 import aiohttp
+from aiohttp import web
 from urllib.parse import quote
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -31,6 +32,8 @@ API_BASE_URL = "https://scarperapi-8lk0.onrender.com"
 STREAMING_HUB_URL = "https://streaminghub.42web.io"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 API_KEY = os.getenv("API_KEY", "YOUR_API_KEY_HERE")
+PORT = int(os.getenv("PORT", "10000"))
+ENABLE_HTTP_SERVER = os.getenv("ENABLE_HTTP_SERVER", "true").lower() == "true"
 
 # Headers for API requests
 HEADERS = {
@@ -495,6 +498,38 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.error(f"Update {update} caused error {context.error}")
 
 
+async def health_check(request: web.Request) -> web.Response:
+    """Health check endpoint for hosting platforms that expect an open HTTP port."""
+    return web.json_response({"status": "ok", "service": "telegram-movie-bot"})
+
+
+async def start_http_server(application: Application) -> None:
+    """Start an optional HTTP server for Render web-service style deployments."""
+    if not ENABLE_HTTP_SERVER:
+        logger.info("HTTP server disabled (ENABLE_HTTP_SERVER=false)")
+        return
+
+    http_app = web.Application()
+    http_app.router.add_get("/", health_check)
+    http_app.router.add_get("/health", health_check)
+
+    runner = web.AppRunner(http_app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    await site.start()
+
+    application.bot_data["http_runner"] = runner
+    logger.info("HTTP health server running on 0.0.0.0:%s", PORT)
+
+
+async def stop_http_server(application: Application) -> None:
+    """Gracefully stop the optional HTTP server."""
+    runner = application.bot_data.get("http_runner")
+    if runner:
+        await runner.cleanup()
+        logger.info("HTTP health server stopped")
+
+
 def main() -> None:
     """Start the bot."""
     # Check for required environment variables
@@ -511,7 +546,13 @@ def main() -> None:
         return
     
     # Create the Application
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(start_http_server)
+        .post_shutdown(stop_http_server)
+        .build()
+    )
     
     # Add conversation handler for search flow
     conv_handler = ConversationHandler(

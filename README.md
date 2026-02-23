@@ -52,6 +52,8 @@ python bot.py
 |----------|-------------|----------|
 | `BOT_TOKEN` | Your Telegram bot token from @BotFather | ✅ Yes |
 | `API_KEY` | Your ScarperAPI key | ✅ Yes |
+| `PORT` | HTTP port for optional health server (default: `10000`) | ❌ No |
+| `ENABLE_HTTP_SERVER` | Enable lightweight health server (`true`/`false`) | ❌ No |
 
 ### Getting a Bot Token
 
@@ -137,6 +139,16 @@ Render supports long-running background workers perfect for Telegram bots.
 6. Deploy
 
 ---
+
+
+#### Web Service vs Background Worker on Render
+
+- **Recommended:** Deploy as a **Background Worker** (`python bot.py`). No port is required.
+- If you accidentally deploy as a **Web Service**, this bot now exposes:
+  - `GET /`
+  - `GET /health`
+  so Render can detect an open port.
+- For worker deployments, set `ENABLE_HTTP_SERVER=false` to avoid opening a port unnecessarily.
 
 ### ☁️ Deploy on Koyeb
 

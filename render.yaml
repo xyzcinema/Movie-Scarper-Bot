@@ -13,7 +13,8 @@ services:
         sync: false  # Set this in Render dashboard
       - key: API_KEY
         sync: false  # Set this in Render dashboard
+      - key: ENABLE_HTTP_SERVER
+        value: "false" # Background workers do not need an HTTP port
       - key: PYTHON_VERSION
         value: 3.11.0
-    healthCheckPath: /health
     autoDeploy: true
