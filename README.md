@@ -1,15 +1,13 @@
 # 🎬 Telegram Movie Scraper Bot
 
-A powerful Telegram bot that fetches movie data from **HdHub4U** and **DesireMovies** via ScarperAPI and provides direct download links with watch online functionality.
+A powerful Telegram bot that fetches movie data from **DesireMovies** via ScarperAPI and provides direct download links via Telegram inline buttons.
 
 ## ✨ Features
 
-- 🔍 **Search Movies** - Find movies from HdHub4U & DesireMovies
-- 🟢 **HdHub4U** - Bollywood, Hollywood, South Indian movies
-- 🔵 **DesireMovies** - Dual audio, Hindi dubbed movies
-- 📥 **Direct Download Links** - Get links for 480p, 720p, 1080p, 4K qualities
-- ▶️ **Watch Online** - Stream movies without downloading
-- 🎬 **Movie Details** - View ratings, year, duration, genre, and plot
+- 🔍 **Search Movies** - Find movies from DesireMovies
+- 📥 **Direct Download Links** - Get quality + size buttons (one per row)
+- 📺 **Web Series Support** - Episode-wise buttons in proper order
+- 🎬 **Clean UI** - Premium inline keyboard flow without images/screenshots
 - ⚡ **Fast & Reliable** - Built with async Python for speed
 
 ## 🚀 Quick Start
@@ -95,10 +93,10 @@ the dark knight
 ### How It Works
 
 1. Send a movie name or use `/search <movie_name>`
-2. Bot searches both **HdHub4U** 🟢 and **DesireMovies** 🔵
-3. Select a movie from the combined search results
-4. Choose your preferred quality (480p, 720p, 1080p, 4K)
-5. Click "📥 Direct Link" to download or "▶️ Watch Online" to stream
+2. Bot searches **DesireMovies** only
+3. Select a movie title from inline keyboard results
+4. Choose a quality button (format: 🎬 quality | size)
+5. For series, select episode first and then quality
 
 ## 🌐 Deployment
 
@@ -318,23 +316,9 @@ sudo systemctl start movie-bot
 
 The bot uses the following ScarperAPI endpoints:
 
-### HdHub4U
-- `GET /api/hdhub4u/search?q={query}` - Search movies
-- `GET /api/hdhub4u/details?url={url}` - Get movie details
-- `GET /api/hdhub4u/magiclinks?url={url}` - Get download links
-
 ### DesireMovies
-- `GET /api/desiremovies/search?q={query}` - Search movies
-- `GET /api/desiremovies/details?url={url}` - Get movie details
-- `GET /api/desiremovies/magiclinks?url={url}` - Get download links
-
-## 🔗 Watch Online Feature
-
-The bot integrates with [streaminghub.42web.io](https://streaminghub.42web.io) to provide online streaming:
-
-```
-https://streaminghub.42web.io/?url=<encoded_direct_link>
-```
+- `GET /api/desiremovies/search?q={query}` - Search movies/series
+- `GET /api/desiremovies/details?url={url}` - Get normalized movie/series details and links
 
 ## 🐛 Troubleshooting
 
@@ -361,7 +345,6 @@ This project is open source and available under the MIT License.
 
 - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) - Telegram Bot API wrapper
 - [ScarperAPI](https://scarperapi-8lk0.onrender.com) - Movie data API
-- [StreamingHub](https://streaminghub.42web.io) - Online streaming service
 
 ## 📞 Support
 
