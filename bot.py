@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 API_BASE_URL = "https://scarperapi-8lk0.onrender.com"
 STREAMING_HUB_URL = "https://streaminghub.42web.io"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-API_KEY = os.getenv("API_KEY", "YOUR_API_KEY_HERE")
+API_KEY = os.getenv("API_KEY", "sk_Wv4v8TwKE4muWoxW-2UD8zG0CW_CLT6z")
 PORT = int(os.getenv("PORT", "10000"))
 ENABLE_HTTP_SERVER = os.getenv("ENABLE_HTTP_SERVER", "true").lower() == "true"
 
@@ -219,6 +219,26 @@ async def search_provider(session: aiohttp.ClientSession, provider: str, query: 
     return []
 
 
+async def fetch_hdhub4u_movies(session: aiohttp.ClientSession, query: str) -> list:
+    """Fetch HDHub4U movie search results and normalize expected fields."""
+    results = await search_provider(session, "hdhub4u", query)
+    normalized_results = []
+
+    for item in results:
+        normalized_results.append(
+            {
+                "title": item.get("title", "Unknown"),
+                "url": item.get("url") or item.get("link") or "",
+                "imageUrl": item.get("imageUrl") or item.get("poster") or "",
+                "year": item.get("year"),
+                "quality": item.get("quality"),
+                "provider": "hdhub4u",
+            }
+        )
+
+    return normalized_results
+
+
 async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Search for movies using HdHub4U and DesireMovies APIs."""
     query = " ".join(context.args)
@@ -243,7 +263,7 @@ async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     try:
         async with aiohttp.ClientSession() as session:
             # Search both providers concurrently
-            hdhub4u_task = search_provider(session, "hdhub4u", query)
+            hdhub4u_task = fetch_hdhub4u_movies(session, query)
             desiremovies_task = search_provider(session, "desiremovies", query)
             
             hdhub4u_results = await hdhub4u_task

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 API_BASE_URL = "https://scarperapi-8lk0.onrender.com"
 STREAMING_HUB_URL = "https://streaminghub.42web.io"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-API_KEY = os.getenv("API_KEY", "")
+API_KEY = os.getenv("API_KEY", "sk_Wv4v8TwKE4muWoxW-2UD8zG0CW_CLT6z")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 
 # Headers for API requests
@@ -174,6 +174,8 @@ async def search_provider(session: aiohttp.ClientSession, provider: str, query: 
         async with session.get(search_url, params=params, headers=HEADERS) as response:
             if response.status == 200:
                 data = await response.json()
+                if isinstance(data, dict) and isinstance(data.get("results"), list):
+                    data = data["results"]
                 if data and isinstance(data, list):
                     for item in data:
                         item["provider"] = provider
@@ -184,6 +186,26 @@ async def search_provider(session: aiohttp.ClientSession, provider: str, query: 
         logger.error(f"Error searching {provider}: {e}")
     
     return []
+
+
+async def fetch_hdhub4u_movies(session: aiohttp.ClientSession, query: str) -> list:
+    """Fetch HDHub4U search results and normalize expected fields."""
+    results = await search_provider(session, "hdhub4u", query)
+    normalized_results = []
+
+    for item in results:
+        normalized_results.append(
+            {
+                "title": item.get("title", "Unknown"),
+                "url": item.get("url") or item.get("link") or "",
+                "imageUrl": item.get("imageUrl") or item.get("poster") or "",
+                "year": item.get("year"),
+                "quality": item.get("quality"),
+                "provider": "hdhub4u",
+            }
+        )
+
+    return normalized_results
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -280,7 +302,7 @@ async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     try:
         async with aiohttp.ClientSession() as session:
             # Search both providers concurrently
-            hdhub4u_results = await search_provider(session, "hdhub4u", query)
+            hdhub4u_results = await fetch_hdhub4u_movies(session, query)
             desiremovies_results = await search_provider(session, "desiremovies", query)
             
             # Combine results
@@ -366,7 +388,7 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
     
     selected_movie = search_results[movie_idx]
-    movie_url = selected_movie.get("link", "")
+    movie_url = selected_movie.get("url") or selected_movie.get("link") or ""
     movie_title = selected_movie.get("title", "Unknown")
     provider = selected_movie.get("provider", "hdhub4u")
     
@@ -416,7 +438,8 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             rating = details.get("rating", "N/A")
             duration = details.get("duration", "N/A")
             genre = details.get("genre", "N/A")
-            plot = details.get("plot", "No description available.")
+            plot = details.get("plot") or details.get("description") or "No description available."
+            poster = details.get("poster") or details.get("imageUrl") or selected_movie.get("imageUrl") or ""
             
             if len(plot) > 300:
                 plot = plot[:297] + "..."
@@ -463,6 +486,16 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 InlineKeyboardButton("🔙 Back to Results", callback_data="back_to_results"),
                 InlineKeyboardButton("🔍 New Search", callback_data="new_search")
             ])
+
+            if poster:
+                try:
+                    await query.message.reply_photo(
+                        photo=poster,
+                        caption=f"🖼 <b>{title}</b>\n{provider_emoji} Source: {provider_name}",
+                        parse_mode="HTML",
+                    )
+                except Exception as image_error:
+                    logger.warning("Could not send poster image: %s", image_error)
             
             await query.edit_message_text(
                 movie_info,
