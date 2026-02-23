@@ -119,6 +119,7 @@ def normalize_download_links(raw_links: Any) -> list[dict[str, str]]:
 
 def normalize_details_payload(raw: dict[str, Any], fallback_title: str = "Unknown") -> dict[str, Any]:
     title = raw.get("title") or fallback_title
+    image_url = str(raw.get("imageUrl") or raw.get("image") or "").strip()
     raw_type = str(raw.get("type") or "movie").lower()
     payload_type = "series" if raw_type == "series" or raw.get("episodes") else "movie"
 
@@ -142,6 +143,7 @@ def normalize_details_payload(raw: dict[str, Any], fallback_title: str = "Unknow
         "success": True,
         "type": "series" if episodes else payload_type,
         "title": str(title),
+        "imageUrl": image_url,
         "downloadLinks": base_links,
     }
     if episodes:
@@ -182,7 +184,15 @@ async def desiremovies_search(session: aiohttp.ClientSession, query: str) -> lis
                 title = str(item.get("title") or "Unknown").strip()
                 link = item.get("url") or item.get("link")
                 if title and isinstance(link, str) and link.strip():
-                    results.append({"title": title, "url": link.strip()})
+                    results.append(
+                        {
+                            "id": str(item.get("id") or "").strip(),
+                            "title": title,
+                            "url": link.strip(),
+                            "imageUrl": str(item.get("imageUrl") or item.get("image") or "").strip(),
+                            "description": str(item.get("description") or "").strip(),
+                        }
+                    )
             if results:
                 return results
     return []
@@ -382,7 +392,7 @@ async def search_api(request: web.Request) -> web.Response:
     except aiohttp.ClientError:
         return web.json_response({"success": False, "error": "Unable to reach upstream API"}, status=502)
 
-    return web.json_response({"success": True, "results": results})
+    return web.json_response({"query": query, "results": results})
 
 
 async def details_api(request: web.Request) -> web.Response:
