@@ -7,6 +7,7 @@ with watch online feature using streaminghub.
 
 import os
 import logging
+import re
 import aiohttp
 from aiohttp import web
 from urllib.parse import quote
@@ -44,6 +45,26 @@ HEADERS = {
 # Conversation states
 SEARCHING, SELECTING_MOVIE = range(2)
 
+def format_quality_size_label(quality: str = "", size: str = "") -> str:
+    """Build a clean quality label using quality and file size values."""
+    quality_text = str(quality or "").strip()
+    size_text = str(size or "").strip()
+
+    if quality_text.lower() in {"", "unknown", "n/a", "na", "none", "null"}:
+        quality_text = ""
+
+    if size_text.lower() in {"", "unknown", "n/a", "na", "none", "null"}:
+        size_text = ""
+
+    if quality_text and size_text:
+        return f"{quality_text} ({size_text})"
+    if quality_text:
+        return quality_text
+    if size_text:
+        return size_text
+
+    return "Unknown"
+
 
 def normalize_download_links(raw_links) -> list:
     """Normalize different API download-link formats into a flat list."""
@@ -80,6 +101,12 @@ def normalize_download_links(raw_links) -> list:
         quality = node.get("quality") or node.get("label") or node.get("name") or inherited_quality
         size = node.get("size") or inherited_size
 
+        if isinstance(quality, str):
+            size_match = re.search(r"(\d+(?:\.\d+)?\s?(?:GB|MB))", quality, flags=re.IGNORECASE)
+            if size_match and not size:
+                size = size_match.group(1)
+            quality = re.sub(r"\(?\s*\d+(?:\.\d+)?\s?(?:GB|MB)\s*\)?", "", quality, flags=re.IGNORECASE).strip(" -[]()")
+
         direct_url = node.get("url") or node.get("link") or node.get("directLink") or node.get("download")
         if isinstance(direct_url, str):
             add_link(direct_url, quality, size)
@@ -114,7 +141,7 @@ def normalize_download_links(raw_links) -> list:
             if isinstance(value, str):
                 add_link(value, key, size)
             elif isinstance(value, (list, dict)):
-                walk(value, key if inherited_quality == "Unknown" else inherited_quality, size)
+                walk(value, key, size)
 
     walk(raw_links)
     return normalized_links
@@ -210,6 +237,7 @@ async def search_provider(session: aiohttp.ClientSession, provider: str, query: 
                     # Add provider info to each result
                     for item in data:
                         item["provider"] = provider
+                        item.setdefault("size", item.get("fileSize") or item.get("filesize") or "")
                     return data
             else:
                 logger.warning(f"{provider} API returned status {response.status}")
@@ -231,6 +259,7 @@ async def fetch_hdhub4u_movies(session: aiohttp.ClientSession, query: str) -> li
                 "url": item.get("url") or item.get("link") or "",
                 "year": item.get("year"),
                 "quality": item.get("quality"),
+                "size": item.get("size"),
                 "provider": "hdhub4u",
             }
         )
@@ -296,15 +325,16 @@ async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             for idx, movie in enumerate(all_results[:15]):  # Limit to 15 results
                 title = movie.get("title", "Unknown")
                 year = movie.get("year", "N/A")
-                quality = movie.get("quality", "")
                 provider = movie.get("provider", "unknown")
                 
                 # Provider emoji
                 provider_emoji = "🟢" if provider == "hdhub4u" else "🔵"
                 
+                quality_label = format_quality_size_label(movie.get("quality", ""), movie.get("size", ""))
+
                 button_text = f"{provider_emoji} {title} ({year})"
-                if quality:
-                    button_text += f" [{quality}]"
+                if quality_label != "Unknown":
+                    button_text += f" [{quality_label}]"
                 keyboard.append([InlineKeyboardButton(button_text, callback_data=f"movie_{idx}")])
             
             keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
@@ -459,14 +489,12 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                         encoded_url = quote(download_url, safe='')
                         watch_url = f"{STREAMING_HUB_URL}/?url={encoded_url}"
 
-                        button_text = f"{quality}"
-                        if size:
-                            button_text += f" ({size})"
+                        button_text = format_quality_size_label(quality, size)
                         
                         # Add buttons for this quality
                         keyboard.append([
                             InlineKeyboardButton(f"📥 {button_text}", url=download_url),
-                            InlineKeyboardButton(f"▶️ Watch {quality}", url=watch_url)
+                            InlineKeyboardButton(f"▶️ Watch {button_text}", url=watch_url)
                         ])
             else:
                 # No download links found
@@ -535,15 +563,16 @@ async def back_to_results(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     for idx, movie in enumerate(search_results[:15]):
         title = movie.get("title", "Unknown")
         year = movie.get("year", "N/A")
-        quality = movie.get("quality", "")
         provider = movie.get("provider", "unknown")
         
         # Provider emoji
         provider_emoji = "🟢" if provider == "hdhub4u" else "🔵"
         
+        quality_label = format_quality_size_label(movie.get("quality", ""), movie.get("size", ""))
+
         button_text = f"{provider_emoji} {title} ({year})"
-        if quality:
-            button_text += f" [{quality}]"
+        if quality_label != "Unknown":
+            button_text += f" [{quality_label}]"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"movie_{idx}")])
     
     keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
