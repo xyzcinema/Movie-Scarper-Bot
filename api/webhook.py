@@ -198,7 +198,7 @@ async def fetch_hdhub4u_movies(session: aiohttp.ClientSession, query: str) -> li
             {
                 "title": item.get("title", "Unknown"),
                 "url": item.get("url") or item.get("link") or "",
-                "imageUrl": item.get("imageUrl") or item.get("poster") or "",
+                "imageUrl": item.get("imageUrl") or item.get("poster") or item.get("watchImageUrl") or "",
                 "year": item.get("year"),
                 "quality": item.get("quality"),
                 "provider": "hdhub4u",
@@ -439,7 +439,15 @@ async def select_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             duration = details.get("duration", "N/A")
             genre = details.get("genre", "N/A")
             plot = details.get("plot") or details.get("description") or "No description available."
-            poster = details.get("poster") or details.get("imageUrl") or selected_movie.get("imageUrl") or ""
+            poster = (
+                details.get("poster")
+                or details.get("imageUrl")
+                or details.get("watchImageUrl")
+                or details.get("watchimageurl")
+                or selected_movie.get("imageUrl")
+                or selected_movie.get("watchImageUrl")
+                or ""
+            )
             
             if len(plot) > 300:
                 plot = plot[:297] + "..."
