@@ -30,6 +30,27 @@ ENABLE_HTTP_SERVER = os.getenv("ENABLE_HTTP_SERVER", "true").lower() == "true"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "webhook").strip("/") or "webhook"
 
+
+def infer_webhook_url() -> str:
+    explicit = WEBHOOK_URL.strip()
+    if explicit:
+        return explicit
+
+    candidates = (
+        os.getenv("RENDER_EXTERNAL_URL", ""),
+        os.getenv("RAILWAY_STATIC_URL", ""),
+        os.getenv("KOYEB_PUBLIC_DOMAIN", ""),
+    )
+    for candidate in candidates:
+        value = candidate.strip()
+        if not value:
+            continue
+        if value.startswith("http://") or value.startswith("https://"):
+            return value
+        return f"https://{value}"
+
+    return ""
+
 HEADERS = {"x-api-key": API_KEY, "Content-Type": "application/json"}
 
 SELECTING_ITEM = 1
@@ -445,8 +466,10 @@ def main() -> None:
     if not API_KEY:
         raise RuntimeError("API_KEY is required")
 
+    resolved_webhook_url = infer_webhook_url()
+
     builder = Application.builder().token(token)
-    if not WEBHOOK_URL:
+    if not resolved_webhook_url:
         builder = builder.post_init(initialize_polling).post_shutdown(stop_http_server)
 
     app = builder.build()
@@ -471,8 +494,8 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
 
-    if WEBHOOK_URL:
-        webhook_target = f"{WEBHOOK_URL.rstrip('/')}/{WEBHOOK_PATH}"
+    if resolved_webhook_url:
+        webhook_target = f"{resolved_webhook_url.rstrip('/')}/{WEBHOOK_PATH}"
         logger.info("Starting bot in webhook mode at %s", webhook_target)
         app.run_webhook(
             listen="0.0.0.0",
