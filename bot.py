@@ -356,12 +356,46 @@ async def health_check(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
+async def search_api(request: web.Request) -> web.Response:
+    query = (request.query.get("q") or "").strip()
+    if not query:
+        return web.json_response({"success": False, "error": "Missing query parameter: q"}, status=400)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            results = await desiremovies_search(session, query)
+    except aiohttp.ClientError:
+        return web.json_response({"success": False, "error": "Unable to reach upstream API"}, status=502)
+
+    return web.json_response({"success": True, "results": results})
+
+
+async def details_api(request: web.Request) -> web.Response:
+    movie_url = (request.query.get("url") or "").strip()
+    if not movie_url:
+        return web.json_response({"success": False, "error": "Missing query parameter: url"}, status=400)
+
+    fallback_title = (request.query.get("title") or "Unknown").strip() or "Unknown"
+    try:
+        async with aiohttp.ClientSession() as session:
+            details = await desiremovies_details(session, movie_url, fallback_title)
+    except aiohttp.ClientError:
+        return web.json_response({"success": False, "error": "Unable to reach upstream API"}, status=502)
+
+    if not details:
+        return web.json_response({"success": False, "error": "Details not found"}, status=404)
+
+    return web.json_response(details)
+
+
 async def start_http_server(application: Application) -> None:
     if not ENABLE_HTTP_SERVER:
         return
     http_app = web.Application()
     http_app.router.add_get("/", health_check)
     http_app.router.add_get("/health", health_check)
+    http_app.router.add_get("/api/desiremovies/search", search_api)
+    http_app.router.add_get("/api/desiremovies/details", details_api)
 
     runner = web.AppRunner(http_app)
     await runner.setup()
