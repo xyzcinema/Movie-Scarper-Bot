@@ -52,6 +52,8 @@ python bot.py
 | `API_KEY` | Your ScarperAPI key | ✅ Yes |
 | `PORT` | HTTP port for optional health server (default: `10000`) | ❌ No |
 | `ENABLE_HTTP_SERVER` | Enable lightweight health server (`true`/`false`) | ❌ No |
+| `WEBHOOK_URL` | Public base URL to run bot in webhook mode (e.g. `https://your-service.onrender.com`) | ❌ No |
+| `WEBHOOK_PATH` | Webhook path suffix (default: `webhook`) | ❌ No |
 
 ### Getting a Bot Token
 
@@ -146,7 +148,16 @@ Render supports long-running background workers perfect for Telegram bots.
   - `GET /`
   - `GET /health`
   so Render can detect an open port.
+- To run as a **Web Service** without `getUpdates` conflicts, set `WEBHOOK_URL` to your Render URL. The bot will automatically switch to webhook mode.
 - For worker deployments, set `ENABLE_HTTP_SERVER=false` to avoid opening a port unnecessarily.
+
+#### Fixing `409 Conflict` (`terminated by other getUpdates request`)
+
+This error means more than one process is polling Telegram for the same bot token.
+
+Choose one:
+- Keep **only one polling instance** running.
+- Or set `WEBHOOK_URL` on your public deployment so this bot uses webhook mode instead of polling.
 
 ### ☁️ Deploy on Koyeb
 

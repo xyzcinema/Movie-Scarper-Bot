@@ -27,6 +27,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 API_KEY = os.getenv("API_KEY", "")
 PORT = int(os.getenv("PORT", "10000"))
 ENABLE_HTTP_SERVER = os.getenv("ENABLE_HTTP_SERVER", "true").lower() == "true"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "webhook").strip("/") or "webhook"
 
 HEADERS = {"x-api-key": API_KEY, "Content-Type": "application/json"}
 
@@ -360,7 +362,11 @@ def main() -> None:
     if not API_KEY:
         raise RuntimeError("API_KEY is required")
 
-    app = Application.builder().token(BOT_TOKEN).post_init(start_http_server).post_shutdown(stop_http_server).build()
+    builder = Application.builder().token(BOT_TOKEN)
+    if not WEBHOOK_URL:
+        builder = builder.post_init(start_http_server).post_shutdown(stop_http_server)
+
+    app = builder.build()
 
     conversation = ConversationHandler(
         entry_points=[
@@ -382,7 +388,21 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
 
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    if WEBHOOK_URL:
+        webhook_target = f"{WEBHOOK_URL.rstrip('/')}/{WEBHOOK_PATH}"
+        logger.info("Starting bot in webhook mode at %s", webhook_target)
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=WEBHOOK_PATH,
+            webhook_url=webhook_target,
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+        )
+        return
+
+    logger.info("Starting bot in polling mode")
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
