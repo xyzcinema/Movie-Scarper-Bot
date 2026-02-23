@@ -100,28 +100,155 @@ the dark knight
 
 ## 🌐 Deployment
 
-### Deploy on Heroku
+### 🚀 Deploy on Render (Recommended)
 
-1. Create a `Procfile`:
-```
-worker: python bot.py
-```
+Render supports long-running background workers perfect for Telegram bots.
 
-2. Create `runtime.txt`:
-```
-python-3.11.0
-```
-
-3. Deploy to Heroku and set environment variables in the dashboard.
-
-### Deploy on Railway
+#### Option 1: Using render.yaml (Blueprint)
 
 1. Fork this repository
-2. Connect to Railway
-3. Add environment variables in Railway dashboard
-4. Deploy
+2. Connect your GitHub account to [Render](https://render.com)
+3. Click "New" → "Blueprint"
+4. Select your repository
+5. Add environment variables in the Render dashboard:
+   - `BOT_TOKEN` - Your Telegram bot token
+   - `API_KEY` - Your ScarperAPI key
 
-### Deploy on VPS/Server
+#### Option 2: Manual Deploy
+
+1. Go to [Render Dashboard](https://dashboard.render.com)
+2. Click "New" → "Background Worker"
+3. Connect your repository
+4. Configure:
+   - **Name**: `telegram-movie-bot`
+   - **Runtime**: `Python 3`
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `python bot.py`
+5. Add environment variables
+6. Click "Create Background Worker"
+
+#### Option 3: Using Dockerfile
+
+1. Fork this repository
+2. On Render, create a new "Background Worker"
+3. Select "Docker" as the runtime
+4. Connect your repository
+5. Add environment variables
+6. Deploy
+
+---
+
+### ☁️ Deploy on Koyeb
+
+Koyeb is a developer-friendly serverless platform with free tier.
+
+#### Option 1: Using koyeb.yaml
+
+1. Fork this repository
+2. Install Koyeb CLI:
+```bash
+curl -fsSL https://raw.githubusercontent.com/koyeb/koyeb-cli/master/install.sh | sh
+```
+
+3. Login to Koyeb:
+```bash
+koyeb login
+```
+
+4. Deploy using the configuration file:
+```bash
+koyeb app init --name telegram-movie-bot --git github.com/yourusername/telegram-movie-bot --git-branch main
+```
+
+5. Set environment variables:
+```bash
+koyeb service update telegram-movie-bot/telegram-movie-bot --env BOT_TOKEN=your_token --env API_KEY=your_api_key
+```
+
+#### Option 2: Using Dockerfile
+
+1. Go to [Koyeb Console](https://app.koyeb.com)
+2. Click "Create Service"
+3. Select "Docker"
+4. Connect your GitHub repository
+5. Configure:
+   - **Service Name**: `telegram-movie-bot`
+   - **Instance Type**: `Free`
+6. Add environment variables
+7. Deploy
+
+---
+
+### ▲ Deploy on Vercel
+
+⚠️ **Note**: Vercel is serverless and uses webhooks instead of polling. This requires additional setup.
+
+1. **Set up webhook URL**:
+   - Deploy first to get a URL
+   - Then set the `WEBHOOK_URL` environment variable
+   - Format: `https://your-app.vercel.app`
+
+2. **Deploy to Vercel**:
+```bash
+# Install Vercel CLI
+npm i -g vercel
+
+# Deploy
+vercel
+```
+
+3. **Set environment variables**:
+```bash
+vercel env add BOT_TOKEN
+vercel env add API_KEY
+vercel env add WEBHOOK_URL
+```
+
+4. **Set webhook with Telegram**:
+```bash
+curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
+  -d "url=https://your-app.vercel.app/webhook"
+```
+
+Or use the automatic webhook setup in `api/webhook.py`.
+
+---
+
+### 🚂 Deploy on Railway
+
+1. Fork this repository
+2. Go to [Railway](https://railway.app)
+3. Click "New Project" → "Deploy from GitHub repo"
+4. Select your repository
+5. Add environment variables in Variables tab
+6. Deploy
+
+---
+
+### 🟣 Deploy on Heroku
+
+1. Create a Heroku account
+2. Install Heroku CLI
+3. Login and create app:
+```bash
+heroku login
+heroku create your-bot-name
+```
+
+4. Set environment variables:
+```bash
+heroku config:set BOT_TOKEN=your_token
+heroku config:set API_KEY=your_api_key
+```
+
+5. Deploy:
+```bash
+git push heroku main
+```
+
+---
+
+### 🖥️ Deploy on VPS/Server
 
 1. Clone the repository on your server
 2. Install dependencies: `pip install -r requirements.txt`
@@ -160,6 +287,20 @@ Enable and start:
 sudo systemctl enable movie-bot
 sudo systemctl start movie-bot
 ```
+
+---
+
+### 📋 Deployment Files Reference
+
+| File | Platform | Purpose |
+|------|----------|---------|
+| `Dockerfile` | All platforms | Container configuration |
+| `render.yaml` | Render | Blueprint specification |
+| `koyeb.yaml` | Koyeb | Service configuration |
+| `vercel.json` | Vercel | Serverless configuration |
+| `Procfile` | Heroku/Railway | Process definition |
+| `runtime.txt` | Heroku | Python version |
+| `requirements.txt` | All platforms | Python dependencies |
 
 ## 📝 API Endpoints Used
 

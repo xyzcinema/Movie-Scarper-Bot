@@ -1,0 +1,19 @@
+# Render Deployment Configuration
+# Docs: https://render.com/docs/blueprint-spec
+
+services:
+  - type: worker
+    name: telegram-movie-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false  # Set this in Render dashboard
+      - key: API_KEY
+        sync: false  # Set this in Render dashboard
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    healthCheckPath: /health
+    autoDeploy: true

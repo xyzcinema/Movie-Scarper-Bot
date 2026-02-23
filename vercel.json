@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "name": "telegram-movie-bot",
+  "builds": [
+    {
+      "src": "api/webhook.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/webhook",
+      "dest": "/api/webhook.py"
+    },
+    {
+      "src": "/",
+      "dest": "/api/webhook.py"
+    }
+  ],
+  "env": {
+    "BOT_TOKEN": "@bot_token",
+    "API_KEY": "@api_key",
+    "WEBHOOK_URL": "@webhook_url"
+  }
+}

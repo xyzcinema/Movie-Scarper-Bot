@@ -1,0 +1,10 @@
+# Railway Deployment Configuration
+# Docs: https://docs.railway.app/deploy/config-as-code
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python bot.py"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
