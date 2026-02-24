@@ -4,6 +4,8 @@
 import os
 import logging
 import re
+import secrets
+import time
 from typing import Any
 
 import aiohttp
@@ -29,6 +31,7 @@ PORT = int(os.getenv("PORT", "10000"))
 ENABLE_HTTP_SERVER = os.getenv("ENABLE_HTTP_SERVER", "true").lower() == "true"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "webhook").strip("/") or "webhook"
+REDIRECT_TTL_SECONDS = int(os.getenv("REDIRECT_TTL_SECONDS", "21600"))
 
 
 def infer_webhook_url() -> str:
@@ -55,6 +58,7 @@ HEADERS = {"x-api-key": API_KEY, "Content-Type": "application/json"}
 
 SELECTING_ITEM = 1
 TOKEN_PATTERN = re.compile(r"^\d+:[A-Za-z0-9_-]{20,}$")
+LINK_REDIRECTS: dict[str, tuple[str, float]] = {}
 
 
 def validate_bot_token(token: str) -> str:
@@ -241,11 +245,20 @@ def build_search_keyboard(results: list[dict[str, Any]]) -> InlineKeyboardMarkup
     return InlineKeyboardMarkup(keyboard)
 
 
-def build_download_keyboard(download_links: list[dict[str, str]]) -> InlineKeyboardMarkup:
+def _build_redirect_url(target_url: str, proxy_base_url: str | None) -> str:
+    if not proxy_base_url:
+        return target_url
+
+    token = secrets.token_urlsafe(8)
+    LINK_REDIRECTS[token] = (target_url, time.time() + REDIRECT_TTL_SECONDS)
+    return f"{proxy_base_url.rstrip('/')}/r/{token}"
+
+
+def build_download_keyboard(download_links: list[dict[str, str]], proxy_base_url: str | None = None) -> InlineKeyboardMarkup:
     rows = []
     for link in download_links:
         label = f"🎬 {normalize_quality(link.get('quality'))} | {normalize_size(link.get('size'))}"
-        rows.append([InlineKeyboardButton(label, url=link["url"])])
+        rows.append([InlineKeyboardButton(label, url=_build_redirect_url(link["url"], proxy_base_url))])
     rows.append([InlineKeyboardButton("🔍 New Search", callback_data="new_search")])
     return InlineKeyboardMarkup(rows)
 
@@ -339,10 +352,11 @@ async def on_movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.edit_message_text("No download links found.")
             return ConversationHandler.END
 
+        proxy_base_url = context.bot_data.get("public_base_url")
         await query.edit_message_text(
             f"🎬 <b>{details['title']}</b>\nChoose quality:",
             parse_mode="HTML",
-            reply_markup=build_download_keyboard(links),
+            reply_markup=build_download_keyboard(links, proxy_base_url=proxy_base_url),
         )
         return ConversationHandler.END
     except aiohttp.ClientError:
@@ -369,12 +383,27 @@ async def on_episode_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("No download links found for this episode.")
         return ConversationHandler.END
 
+    proxy_base_url = context.bot_data.get("public_base_url")
     await query.edit_message_text(
         f"📺 <b>{details.get('title', 'Series')}</b>\nEpisode {episode['episodeNumber']}\nChoose quality:",
         parse_mode="HTML",
-        reply_markup=build_download_keyboard(episode_links),
+        reply_markup=build_download_keyboard(episode_links, proxy_base_url=proxy_base_url),
     )
     return ConversationHandler.END
+
+
+async def redirect_download(request: web.Request) -> web.Response:
+    token = request.match_info.get("token", "")
+    entry = LINK_REDIRECTS.get(token)
+    if not entry:
+        return web.Response(status=404, text="Link expired or invalid")
+
+    target_url, expires_at = entry
+    if time.time() > expires_at:
+        LINK_REDIRECTS.pop(token, None)
+        return web.Response(status=410, text="Link expired")
+
+    return web.HTTPFound(location=target_url)
 
 
 async def new_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -440,6 +469,7 @@ async def start_http_server(application: Application) -> None:
     http_app = web.Application()
     http_app.router.add_get("/", health_check)
     http_app.router.add_get("/health", health_check)
+    http_app.router.add_get("/r/{token}", redirect_download)
     http_app.router.add_get("/api/desiremovies/search", search_api)
     http_app.router.add_get("/api/desiremovies/details", details_api)
 
@@ -473,6 +503,7 @@ def main() -> None:
         builder = builder.post_init(initialize_polling).post_shutdown(stop_http_server)
 
     app = builder.build()
+    app.bot_data["public_base_url"] = resolved_webhook_url or ""
 
     conversation = ConversationHandler(
         entry_points=[

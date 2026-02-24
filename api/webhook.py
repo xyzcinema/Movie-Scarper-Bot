@@ -6,7 +6,10 @@ import json
 import logging
 import os
 import re
+import secrets
+import time
 from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse
 from typing import Any
 
 import aiohttp
@@ -30,6 +33,8 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 HEADERS = {"x-api-key": API_KEY, "Content-Type": "application/json"}
 SELECTING_ITEM = 1
 _application = None
+REDIRECT_TTL_SECONDS = int(os.getenv("REDIRECT_TTL_SECONDS", "21600"))
+LINK_REDIRECTS: dict[str, tuple[str, float]] = {}
 
 
 def normalize_quality(quality: str | None) -> str:
@@ -158,8 +163,18 @@ def build_search_keyboard(results: list[dict[str, str]]) -> InlineKeyboardMarkup
     return InlineKeyboardMarkup(rows)
 
 
+def _build_redirect_url(target_url: str) -> str:
+    base_url = WEBHOOK_URL.strip().rstrip("/")
+    if not base_url:
+        return target_url
+
+    token = secrets.token_urlsafe(8)
+    LINK_REDIRECTS[token] = (target_url, time.time() + REDIRECT_TTL_SECONDS)
+    return f"{base_url}/r/{token}"
+
+
 def build_download_keyboard(download_links: list[dict[str, str]]) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(f"🎬 {normalize_quality(link.get('quality'))} | {normalize_size(link.get('size'))}", url=link["url"])] for link in download_links]
+    rows = [[InlineKeyboardButton(f"🎬 {normalize_quality(link.get('quality'))} | {normalize_size(link.get('size'))}", url=_build_redirect_url(link["url"]))] for link in download_links]
     rows.append([InlineKeyboardButton("🔍 New Search", callback_data="new_search")])
     return InlineKeyboardMarkup(rows)
 
@@ -326,6 +341,29 @@ def get_application() -> Application:
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/r/"):
+            token = parsed.path.rsplit("/", 1)[-1]
+            entry = LINK_REDIRECTS.get(token)
+            if not entry:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Link expired or invalid")
+                return
+
+            target_url, expires_at = entry
+            if time.time() > expires_at:
+                LINK_REDIRECTS.pop(token, None)
+                self.send_response(410)
+                self.end_headers()
+                self.wfile.write(b"Link expired")
+                return
+
+            self.send_response(302)
+            self.send_header("Location", target_url)
+            self.end_headers()
+            return
+
         self.send_response(200)
         self.send_header("Content-type", "application/json")
         self.end_headers()
